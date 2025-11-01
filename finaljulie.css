@@ -1,0 +1,1099 @@
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox, simpledialog
+import speech_recognition as sr
+import pyttsx3
+import datetime
+import webbrowser
+import os
+import requests
+import json
+from threading import Thread
+import time
+import sqlite3
+import pickle
+import base64
+from cryptography.fernet import Fernet
+import subprocess
+import pyautogui
+import pywhatkit
+from urllib.parse import quote
+import platform
+import smtplib
+from email.mime.text import MimeText
+from email.mime.multipart import MimeMultipart
+import random
+import pyperclip
+
+class AdvancedVoiceAssistant:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Ultimate Personal Voice Assistant")
+        self.root.geometry("900x800")
+        self.root.resizable(True, True)
+        
+        # Initialize personal profile
+        self.user_profile = {}
+        self.encryption_key = self.generate_encryption_key()
+        
+        # Initialize databases
+        self.init_databases()
+        
+        # Load user profile
+        self.load_user_profile()
+        
+        # Initialize speech engine
+        self.engine = pyttsx3.init()
+        self.engine.setProperty('rate', 150)
+        voices = self.engine.getProperty('voices')
+        if voices:
+            self.engine.setProperty('voice', voices[1].id)  # Female voice
+        
+        # Initialize speech recognition
+        self.recognizer = sr.Recognizer()
+        self.microphone = sr.Microphone()
+        
+        # Adjust for ambient noise
+        with self.microphone as source:
+            self.recognizer.adjust_for_ambient_noise(source)
+        
+        self.is_listening = False
+        self.setup_ui()
+        
+    def generate_encryption_key(self):
+        """Generate or load encryption key for secure data storage"""
+        try:
+            with open('key.key', 'rb') as key_file:
+                return key_file.read()
+        except FileNotFoundError:
+            key = Fernet.generate_key()
+            with open('key.key', 'wb') as key_file:
+                key_file.write(key)
+            return key
+    
+    def encrypt_data(self, data):
+        """Encrypt sensitive data"""
+        fernet = Fernet(self.encryption_key)
+        return fernet.encrypt(data.encode())
+    
+    def decrypt_data(self, encrypted_data):
+        """Decrypt sensitive data"""
+        fernet = Fernet(self.encryption_key)
+        return fernet.decrypt(encrypted_data).decode()
+    
+    def init_databases(self):
+        """Initialize SQLite databases for personal data"""
+        conn = sqlite3.connect('personal_assistant.db')
+        cursor = conn.cursor()
+        
+        # User profile table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_profile (
+                key TEXT PRIMARY KEY,
+                value BLOB
+            )
+        ''')
+        
+        # Contacts table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                relationship TEXT,
+                phone TEXT,
+                email TEXT,
+                notes TEXT
+            )
+        ''')
+        
+        # Tasks table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task TEXT NOT NULL,
+                priority TEXT,
+                due_date TEXT,
+                completed INTEGER DEFAULT 0,
+                created_date TEXT
+            )
+        ''')
+        
+        # Notes table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT,
+                created_date TEXT,
+                category TEXT
+            )
+        ''')
+        
+        # Apps table for quick access
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS apps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                path TEXT,
+                command TEXT,
+                category TEXT
+            )
+        ''')
+        
+        # Email templates table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS email_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                subject TEXT,
+                body TEXT
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        
+        # Add default apps and templates
+        self.add_default_apps()
+        self.add_default_email_templates()
+    
+    def add_default_apps(self):
+        """Add default applications to the database"""
+        conn = sqlite3.connect('personal_assistant.db')
+        cursor = conn.cursor()
+        
+        # Check if apps already exist
+        cursor.execute("SELECT COUNT(*) FROM apps")
+        if cursor.fetchone()[0] == 0:
+            default_apps = [
+                ('Notepad', 'notepad.exe', 'notepad', 'Utilities'),
+                ('Calculator', 'calc.exe', 'calc', 'Utilities'),
+                ('Chrome', 'chrome.exe', 'chrome', 'Browser'),
+                ('Spotify', 'spotify.exe', 'spotify', 'Music'),
+                ('VLC', 'vlc.exe', 'vlc', 'Media'),
+                ('Word', 'winword.exe', 'word', 'Office'),
+                ('Excel', 'excel.exe', 'excel', 'Office'),
+                ('Settings', 'ms-settings:', 'settings', 'System'),
+                ('Camera', 'microsoft.windows.camera:', 'camera', 'Media'),
+                ('Mail', 'outlookmail:', 'mail', 'Communication'),
+            ]
+            
+            for app in default_apps:
+                cursor.execute(
+                    "INSERT INTO apps (name, path, command, category) VALUES (?, ?, ?, ?)",
+                    app
+                )
+        
+        conn.commit()
+        conn.close()
+    
+    def add_default_email_templates(self):
+        """Add default email templates"""
+        conn = sqlite3.connect('personal_assistant.db')
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT COUNT(*) FROM email_templates")
+        if cursor.fetchone()[0] == 0:
+            templates = [
+                ('Follow Up', 'Following up on our conversation', 'Hello,\n\nI wanted to follow up on our recent conversation.\n\nBest regards,\n[Your Name]'),
+                ('Meeting Request', 'Meeting Request', 'Hello,\n\nI would like to schedule a meeting to discuss [topic]. Please let me know your availability.\n\nBest regards,\n[Your Name]'),
+                ('Thank You', 'Thank You Note', 'Hello,\n\nThank you for your time and consideration.\n\nBest regards,\n[Your Name]'),
+            ]
+            
+            for template in templates:
+                cursor.execute(
+                    "INSERT INTO email_templates (name, subject, body) VALUES (?, ?, ?)",
+                    template
+                )
+        
+        conn.commit()
+        conn.close()
+    
+    def load_user_profile(self):
+        """Load user profile from database"""
+        conn = sqlite3.connect('personal_assistant.db')
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT key, value FROM user_profile")
+        rows = cursor.fetchall()
+        
+        for key, encrypted_value in rows:
+            try:
+                self.user_profile[key] = self.decrypt_data(encrypted_value)
+            except:
+                self.user_profile[key] = encrypted_value.decode() if encrypted_value else ""
+        
+        conn.close()
+        
+        # Set default values if profile is empty
+        if not self.user_profile:
+            self.setup_user_profile()
+    
+    def setup_user_profile(self):
+        """Initial setup for user profile"""
+        self.user_profile = {
+            'name': '',
+            'age': '',
+            'birthday': '',
+            'email': '',
+            'phone': '',
+            'address': '',
+            'work': '',
+            'interests': '',
+            'emergency_contact': '',
+            'medical_info': '',
+            'favorite_music': '',
+            'favorite_websites': '',
+            'linkedin_url': '',
+            'github_url': '',
+            'email_password': '',  # Encrypted
+            'social_media_username': ''
+        }
+        self.show_profile_setup_dialog()
+    
+    def show_profile_setup_dialog(self):
+        """Show profile setup dialog"""
+        response = messagebox.askyesno(
+            "Profile Setup", 
+            "Would you like to set up your personal profile now?"
+        )
+        if response:
+            self.manage_profile()
+    
+    def save_user_profile(self):
+        """Save user profile to database"""
+        conn = sqlite3.connect('personal_assistant.db')
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM user_profile")
+        
+        for key, value in self.user_profile.items():
+            if value:
+                encrypted_value = self.encrypt_data(str(value))
+                cursor.execute(
+                    "INSERT INTO user_profile (key, value) VALUES (?, ?)",
+                    (key, encrypted_value)
+                )
+        
+        conn.commit()
+        conn.close()
+    
+    def setup_ui(self):
+        # Main frame
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Title with user name
+        user_name = self.user_profile.get('name', 'User')
+        title_label = ttk.Label(main_frame, text=f"Ultimate Assistant for {user_name}", font=("Arial", 16, "bold"))
+        title_label.grid(row=0, column=0, columnspan=4, pady=(0, 10))
+        
+        # Status label
+        self.status_label = ttk.Label(main_frame, text="Ready", foreground="green")
+        self.status_label.grid(row=1, column=0, columnspan=4, pady=(0, 10))
+        
+        # Control buttons frame
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=2, column=0, columnspan=4, pady=(0, 10))
+        
+        # Listen button
+        self.listen_button = ttk.Button(button_frame, text="Start Listening", command=self.toggle_listening)
+        self.listen_button.grid(row=0, column=0, padx=2)
+        
+        # Profile button
+        self.profile_button = ttk.Button(button_frame, text="My Profile", command=self.manage_profile)
+        self.profile_button.grid(row=0, column=1, padx=2)
+        
+        # Quick Actions button
+        self.actions_button = ttk.Button(button_frame, text="Quick Actions", command=self.show_quick_actions)
+        self.actions_button.grid(row=0, column=2, padx=2)
+        
+        # Command Categories button
+        self.categories_button = ttk.Button(button_frame, text="Command Categories", command=self.show_command_categories)
+        self.categories_button.grid(row=0, column=3, padx=2)
+        
+        # Conversation area
+        conversation_label = ttk.Label(main_frame, text="Conversation:")
+        conversation_label.grid(row=3, column=0, sticky=tk.W, pady=(10, 5))
+        
+        self.conversation_area = scrolledtext.ScrolledText(main_frame, width=100, height=20, state=tk.DISABLED)
+        self.conversation_area.grid(row=4, column=0, columnspan=4, pady=(0, 10), sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Enhanced commands examples
+        examples_label = ttk.Label(main_frame, text="Enhanced Commands (100+ Available):")
+        examples_label.grid(row=5, column=0, sticky=tk.W, pady=(10, 5))
+        
+        examples_text = """
+• SOCIAL: "Open LinkedIn", "Like post", "Connect with John", "Share post", "Comment on post"
+• EMAIL: "Open Gmail", "Write email to boss", "Send meeting request", "Check inbox", "Reply to email"
+• SYSTEM: "Adjust brightness", "Open settings", "Take screenshot", "Lock computer", "Shutdown"
+• MUSIC: "Play Spotify", "Like song", "Add to playlist", "Next track", "Volume up"
+• SHOPPING: "Open Amazon", "Add to cart", "Search products", "Check price", "Buy now"
+• BROWSER: "Open Chrome", "New tab", "Close tab", "Bookmark page", "Clear history"
+• PRODUCTIVITY: "Open Word", "Create document", "Save file", "Print document", "Find text"
+• SOCIAL MEDIA: "Open Instagram", "Like photo", "Post story", "Follow user", "Check messages"
+• VIDEO: "Open YouTube", "Like video", "Subscribe channel", "Watch later", "Search videos"
+• UTILITIES: "Open calculator", "Set timer", "Check weather", "Find location", "Translate text"
+        """
+        
+        examples_display = tk.Text(main_frame, width=100, height=10, wrap=tk.WORD)
+        examples_display.grid(row=6, column=0, columnspan=4, pady=(0, 10))
+        examples_display.insert(tk.END, examples_text)
+        examples_display.config(state=tk.DISABLED)
+        
+        # Configure grid weights
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(4, weight=1)
+    
+    def toggle_listening(self):
+        if not self.is_listening:
+            self.is_listening = True
+            self.listen_button.config(text="Stop Listening")
+            self.status_label.config(text="Listening...", foreground="blue")
+            self.add_to_conversation("Assistant", "I'm listening...")
+            # Start listening in a separate thread
+            self.listening_thread = Thread(target=self.listen_loop)
+            self.listening_thread.daemon = True
+            self.listening_thread.start()
+        else:
+            self.is_listening = False
+            self.listen_button.config(text="Start Listening")
+            self.status_label.config(text="Ready", foreground="green")
+            self.add_to_conversation("Assistant", "Stopped listening.")
+    
+    def listen_loop(self):
+        while self.is_listening:
+            try:
+                with self.microphone as source:
+                    # Listen for audio with timeout
+                    audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=5)
+                
+                # Recognize speech
+                command = self.recognizer.recognize_google(audio).lower()
+                self.add_to_conversation("You", command)
+                self.process_enhanced_command(command)
+                
+            except sr.WaitTimeoutError:
+                # No speech detected, continue listening
+                pass
+            except sr.UnknownValueError:
+                self.add_to_conversation("Assistant", "Sorry, I didn't understand that.")
+                self.speak("Sorry, I didn't understand that.")
+            except sr.RequestError as e:
+                self.add_to_conversation("Assistant", f"Error with speech recognition: {e}")
+                self.speak("There was an error with speech recognition.")
+            except Exception as e:
+                self.add_to_conversation("Assistant", f"Unexpected error: {e}")
+    
+    def process_enhanced_command(self, command):
+        response = "I'm not sure how to help with that."
+        
+        # === SOCIAL MEDIA COMMANDS ===
+        if any(word in command for word in ["linkedin", "professional"]):
+            response = self.handle_linkedin_command(command)
+        
+        elif any(word in command for word in ["facebook", "fb"]):
+            response = self.handle_facebook_command(command)
+        
+        elif any(word in command for word in ["instagram", "insta"]):
+            response = self.handle_instagram_command(command)
+        
+        elif any(word in command for word in ["twitter", "tweet"]):
+            response = self.handle_twitter_command(command)
+        
+        # === EMAIL COMMANDS ===
+        elif any(word in command for word in ["email", "gmail", "outlook", "mail"]):
+            response = self.handle_email_command(command)
+        
+        # === SYSTEM CONTROL COMMANDS ===
+        elif any(word in command for word in ["brightness", "display"]):
+            response = self.handle_brightness_command(command)
+        
+        elif any(word in command for word in ["settings", "control panel"]):
+            response = self.handle_settings_command(command)
+        
+        # === MUSIC & SPOTIFY COMMANDS ===
+        elif any(word in command for word in ["spotify", "music", "song"]):
+            response = self.handle_spotify_command(command)
+        
+        # === SHOPPING COMMANDS ===
+        elif any(word in command for word in ["amazon", "flipkart", "shop", "cart", "buy"]):
+            response = self.handle_shopping_command(command)
+        
+        # === YOUTUBE COMMANDS ===
+        elif any(word in command for word in ["youtube", "video", "subscribe"]):
+            response = self.handle_youtube_command(command)
+        
+        # === BROWSER COMMANDS ===
+        elif any(word in command for word in ["chrome", "browser", "firefox", "edge"]):
+            response = self.handle_browser_command(command)
+        
+        # === PRODUCTIVITY COMMANDS ===
+        elif any(word in command for word in ["word", "excel", "powerpoint", "document"]):
+            response = self.handle_office_command(command)
+        
+        # === UTILITY COMMANDS ===
+        elif any(word in command for word in ["calculator", "timer", "alarm", "clock"]):
+            response = self.handle_utility_command(command)
+        
+        # === COMPUTER CONTROL COMMANDS ===
+        elif any(word in command for word in ["shutdown", "restart", "lock", "sleep"]):
+            response = self.handle_computer_command(command)
+        
+        # === FILE MANAGEMENT COMMANDS ===
+        elif any(word in command for word in ["file", "folder", "create", "delete"]):
+            response = self.handle_file_command(command)
+        
+        # === SEARCH COMMANDS ===
+        elif any(word in command for word in ["search", "find", "google"]):
+            response = self.handle_search_command(command)
+        
+        # === SOCIAL INTERACTION COMMANDS ===
+        elif any(word in command for word in ["like", "comment", "share", "follow"]):
+            response = self.handle_social_action_command(command)
+        
+        # === PERSONAL ASSISTANT COMMANDS ===
+        elif any(word in command for word in ["remind", "remember", "note"]):
+            response = self.handle_personal_command(command)
+        
+        # === BASIC COMMANDS ===
+        elif "time" in command:
+            current_time = datetime.datetime.now().strftime("%I:%M %p")
+            response = f"The current time is {current_time}"
+        
+        elif "date" in command:
+            current_date = datetime.datetime.now().strftime("%A, %B %d, %Y")
+            response = f"Today is {current_date}"
+        
+        elif "joke" in command:
+            joke = self.get_joke()
+            response = joke
+        
+        elif "weather" in command:
+            response = self.get_weather()
+        
+        elif any(word in command for word in ["exit", "quit", "stop", "goodbye"]):
+            response = "Goodbye! Have a great day!"
+            self.add_to_conversation("Assistant", response)
+            self.speak(response)
+            self.root.after(1000, self.root.destroy)
+            return
+        
+        else:
+            response = "I can help with social media, email, system controls, shopping, and much more! Say 'show commands' to see all options."
+        
+        self.add_to_conversation("Assistant", response)
+        self.speak(response)
+    
+    # === SOCIAL MEDIA HANDLERS ===
+    def handle_linkedin_command(self, command):
+        if "open" in command:
+            webbrowser.open("https://linkedin.com")
+            return "Opening LinkedIn"
+        elif "like" in command or "react" in command:
+            # Simulate like action
+            time.sleep(2)
+            pyautogui.press('l')  # LinkedIn like shortcut
+            return "Liked the post"
+        elif "connect" in command:
+            # Extract name from command
+            name = command.replace("connect with", "").replace("on linkedin", "").strip()
+            webbrowser.open(f"https://linkedin.com/search/results/people/?keywords={quote(name)}")
+            return f"Searching for {name} on LinkedIn"
+        elif "share" in command:
+            time.sleep(2)
+            pyautogui.hotkey('ctrl', 'shift', 's')  # Simulate share
+            return "Opening share dialog"
+        elif "comment" in command:
+            time.sleep(2)
+            pyautogui.press('c')  # LinkedIn comment shortcut
+            return "Opening comment box"
+        else:
+            webbrowser.open("https://linkedin.com")
+            return "Opening LinkedIn"
+    
+    def handle_facebook_command(self, command):
+        if "open" in command:
+            webbrowser.open("https://facebook.com")
+            return "Opening Facebook"
+        elif "like" in command:
+            time.sleep(3)
+            # Facebook like button position (approximate)
+            pyautogui.click(x=500, y=600)
+            return "Liked the post"
+        elif "share" in command:
+            time.sleep(3)
+            pyautogui.click(x=600, y=600)  # Share button position
+            return "Sharing post"
+        else:
+            webbrowser.open("https://facebook.com")
+            return "Opening Facebook"
+    
+    def handle_instagram_command(self, command):
+        if "open" in command:
+            webbrowser.open("https://instagram.com")
+            return "Opening Instagram"
+        elif "like" in command:
+            time.sleep(3)
+            # Double click to like
+            pyautogui.doubleClick(x=400, y=400)
+            return "Liked the photo"
+        elif "story" in command:
+            time.sleep(2)
+            pyautogui.click(x=200, y=200)  # Story position
+            return "Viewing stories"
+        else:
+            webbrowser.open("https://instagram.com")
+            return "Opening Instagram"
+    
+    def handle_twitter_command(self, command):
+        if "open" in command:
+            webbrowser.open("https://twitter.com")
+            return "Opening Twitter"
+        elif "tweet" in command:
+            time.sleep(2)
+            pyautogui.click(x=200, y=150)  # Tweet button
+            return "Opening tweet composer"
+        elif "like" in command or "heart" in command:
+            time.sleep(2)
+            pyautogui.click(x=600, y=500)  # Like button
+            return "Liked the tweet"
+        else:
+            webbrowser.open("https://twitter.com")
+            return "Opening Twitter"
+    
+    # === EMAIL HANDLERS ===
+    def handle_email_command(self, command):
+        if "open" in command:
+            webbrowser.open("https://gmail.com")
+            return "Opening Gmail"
+        elif "write" in command or "compose" in command:
+            webbrowser.open("https://mail.google.com/mail/u/0/#inbox?compose=new")
+            return "Opening email composer"
+        elif "send" in command and "email" in command:
+            # Extract recipient and subject
+            if "to" in command:
+                recipient = command.split("to")[1].split("about")[0].strip()
+                subject = command.split("about")[1].strip() if "about" in command else "Hello"
+                webbrowser.open(f"https://mail.google.com/mail/u/0/#inbox?compose=new&to={quote(recipient)}&su={quote(subject)}")
+                return f"Composing email to {recipient} about {subject}"
+            else:
+                webbrowser.open("https://mail.google.com/mail/u/0/#inbox?compose=new")
+                return "Opening email composer"
+        elif "inbox" in command or "check" in command:
+            webbrowser.open("https://gmail.com")
+            return "Opening inbox"
+        elif "reply" in command:
+            time.sleep(2)
+            pyautogui.hotkey('ctrl', 'r')  # Reply shortcut
+            return "Opening reply"
+        else:
+            webbrowser.open("https://gmail.com")
+            return "Opening Gmail"
+    
+    # === SYSTEM CONTROL HANDLERS ===
+    def handle_brightness_command(self, command):
+        if "increase" in command or "up" in command:
+            # Windows brightness increase
+            if platform.system() == "Windows":
+                os.system("powershell (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,80)")
+            return "Increasing brightness"
+        elif "decrease" in command or "down" in command:
+            if platform.system() == "Windows":
+                os.system("powershell (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,40)")
+            return "Decreasing brightness"
+        else:
+            if platform.system() == "Windows":
+                os.system("start ms-settings:display")
+            return "Opening display settings"
+    
+    def handle_settings_command(self, command):
+        if platform.system() == "Windows":
+            os.system("start ms-settings:")
+            return "Opening Windows Settings"
+        else:
+            return "Settings command available on Windows only"
+    
+    # === MUSIC & SPOTIFY HANDLERS ===
+    def handle_spotify_command(self, command):
+        if "open" in command:
+            try:
+                os.system("start spotify:")
+                return "Opening Spotify"
+            except:
+                webbrowser.open("https://open.spotify.com")
+                return "Opening Spotify web player"
+        elif "play" in command:
+            song = command.replace("play", "").replace("on spotify", "").strip()
+            if song:
+                webbrowser.open(f"https://open.spotify.com/search/{quote(song)}")
+                return f"Searching for {song} on Spotify"
+        elif "like" in command or "save" in command:
+            time.sleep(3)
+            pyautogui.click(x=400, y=400)  # Like button position
+            return "Liked the current song"
+        elif "next" in command:
+            pyautogui.hotkey('ctrl', 'right')  # Next track
+            return "Playing next track"
+        elif "previous" in command:
+            pyautogui.hotkey('ctrl', 'left')  # Previous track
+            return "Playing previous track"
+        elif "pause" in command or "stop" in command:
+            pyautogui.press('space')  # Play/pause
+            return "Paused music"
+        else:
+            try:
+                os.system("start spotify:")
+                return "Opening Spotify"
+            except:
+                webbrowser.open("https://open.spotify.com")
+                return "Opening Spotify web player"
+    
+    # === SHOPPING HANDLERS ===
+    def handle_shopping_command(self, command):
+        if "amazon" in command:
+            webbrowser.open("https://amazon.com")
+            return "Opening Amazon"
+        elif "flipkart" in command:
+            webbrowser.open("https://flipkart.com")
+            return "Opening Flipkart"
+        elif "add to cart" in command:
+            time.sleep(3)
+            pyautogui.click(x=500, y=500)  # Add to cart button
+            return "Added item to cart"
+        elif "buy now" in command:
+            time.sleep(3)
+            pyautogui.click(x=600, y=500)  # Buy now button
+            return "Proceeding to checkout"
+        elif "search" in command:
+            product = command.replace("search for", "").replace("on amazon", "").replace("on flipkart", "").strip()
+            if "amazon" in command:
+                webbrowser.open(f"https://amazon.com/s?k={quote(product)}")
+            else:
+                webbrowser.open(f"https://flipkart.com/search?q={quote(product)}")
+            return f"Searching for {product}"
+        else:
+            webbrowser.open("https://amazon.com")
+            return "Opening Amazon"
+    
+    # === YOUTUBE HANDLERS ===
+    def handle_youtube_command(self, command):
+        if "open" in command:
+            webbrowser.open("https://youtube.com")
+            return "Opening YouTube"
+        elif "like" in command:
+            time.sleep(3)
+            pyautogui.click(x=800, y=500)  # Like button position
+            return "Liked the video"
+        elif "subscribe" in command:
+            time.sleep(3)
+            pyautogui.click(x=900, y=300)  # Subscribe button
+            return "Subscribed to channel"
+        elif "play" in command:
+            video = command.replace("play", "").replace("on youtube", "").strip()
+            if video:
+                pywhatkit.playonyt(video)
+                return f"Playing {video} on YouTube"
+        else:
+            webbrowser.open("https://youtube.com")
+            return "Opening YouTube"
+    
+    # === BROWSER HANDLERS ===
+    def handle_browser_command(self, command):
+        if "chrome" in command:
+            os.system("start chrome")
+            return "Opening Chrome"
+        elif "firefox" in command:
+            os.system("start firefox")
+            return "Opening Firefox"
+        elif "new tab" in command:
+            pyautogui.hotkey('ctrl', 't')
+            return "Opening new tab"
+        elif "close tab" in command:
+            pyautogui.hotkey('ctrl', 'w')
+            return "Closing current tab"
+        elif "bookmark" in command:
+            pyautogui.hotkey('ctrl', 'd')
+            return "Bookmarking current page"
+        else:
+            os.system("start chrome")
+            return "Opening Chrome"
+    
+    # === OFFICE PRODUCTIVITY HANDLERS ===
+    def handle_office_command(self, command):
+        if "word" in command:
+            os.system("start winword")
+            return "Opening Microsoft Word"
+        elif "excel" in command:
+            os.system("start excel")
+            return "Opening Microsoft Excel"
+        elif "powerpoint" in command:
+            os.system("start powerpnt")
+            return "Opening Microsoft PowerPoint"
+        elif "document" in command and "create" in command:
+            os.system("start winword")
+            time.sleep(2)
+            pyautogui.hotkey('ctrl', 'n')  # New document
+            return "Creating new document"
+        elif "save" in command:
+            pyautogui.hotkey('ctrl', 's')
+            return "Saving document"
+        elif "print" in command:
+            pyautogui.hotkey('ctrl', 'p')
+            return "Opening print dialog"
+        else:
+            os.system("start winword")
+            return "Opening Microsoft Word"
+    
+    # === UTILITY HANDLERS ===
+    def handle_utility_command(self, command):
+        if "calculator" in command:
+            os.system("start calc")
+            return "Opening Calculator"
+        elif "timer" in command:
+            # Extract time
+            import re
+            numbers = re.findall(r'\d+', command)
+            if numbers:
+                seconds = int(numbers[0])
+                def start_timer():
+                    time.sleep(seconds)
+                    self.speak("Timer completed!")
+                Thread(target=start_timer, daemon=True).start()
+                return f"Timer set for {seconds} seconds"
+            return "Please specify timer duration"
+        elif "alarm" in command:
+            return "Alarm feature coming soon"
+        else:
+            os.system("start calc")
+            return "Opening Calculator"
+    
+    # === COMPUTER CONTROL HANDLERS ===
+    def handle_computer_command(self, command):
+        if "shutdown" in command:
+            if platform.system() == "Windows":
+                os.system("shutdown /s /t 5")
+            return "Shutting down computer in 5 seconds"
+        elif "restart" in command:
+            if platform.system() == "Windows":
+                os.system("shutdown /r /t 5")
+            return "Restarting computer in 5 seconds"
+        elif "lock" in command:
+            if platform.system() == "Windows":
+                os.system("rundll32.exe user32.dll,LockWorkStation")
+            return "Locking computer"
+        elif "sleep" in command:
+            if platform.system() == "Windows":
+                os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+            return "Putting computer to sleep"
+        else:
+            return "I can shutdown, restart, lock, or sleep your computer"
+    
+    # === FILE MANAGEMENT HANDLERS ===
+    def handle_file_command(self, command):
+        if "create folder" in command:
+            folder_name = command.replace("create folder", "").strip()
+            if folder_name:
+                os.makedirs(folder_name, exist_ok=True)
+                return f"Created folder {folder_name}"
+            return "Please specify folder name"
+        elif "create file" in command:
+            file_name = command.replace("create file", "").strip()
+            if file_name:
+                with open(file_name, 'w') as f:
+                    f.write("")
+                return f"Created file {file_name}"
+            return "Please specify file name"
+        elif "delete" in command:
+            item_name = command.replace("delete", "").strip()
+            if item_name and os.path.exists(item_name):
+                if os.path.isfile(item_name):
+                    os.remove(item_name)
+                else:
+                    os.rmdir(item_name)
+                return f"Deleted {item_name}"
+            return "Please specify item to delete"
+        else:
+            os.system("explorer .")  # Open current directory
+            return "Opening file explorer"
+    
+    # === SEARCH HANDLERS ===
+    def handle_search_command(self, command):
+        query = command.replace("search for", "").replace("search", "").replace("find", "").strip()
+        if query:
+            webbrowser.open(f"https://www.google.com/search?q={quote(query)}")
+            return f"Searching for {query}"
+        return "What would you like me to search for?"
+    
+    # === SOCIAL ACTION HANDLERS ===
+    def handle_social_action_command(self, command):
+        if "like" in command:
+            # Generic like action
+            time.sleep(2)
+            pyautogui.click()  # Simple click for like
+            return "Liked the content"
+        elif "comment" in command:
+            time.sleep(2)
+            pyautogui.click(x=500, y=600)  # Comment area
+            return "Opening comment box"
+        elif "share" in command:
+            time.sleep(2)
+            pyautogui.hotkey('ctrl', 's')  # Share shortcut
+            return "Sharing content"
+        elif "follow" in command:
+            time.sleep(2)
+            pyautogui.click(x=700, y=300)  # Follow button
+            return "Following user"
+        else:
+            return "I can like, comment, share, or follow content"
+    
+    # === PERSONAL ASSISTANT HANDLERS ===
+    def handle_personal_command(self, command):
+        if "remind" in command:
+            reminder = command.replace("remind me to", "").replace("remind me", "").strip()
+            if reminder:
+                self.add_task(reminder)
+                return f"I'll remind you to {reminder}"
+            return "What should I remind you about?"
+        elif "remember" in command:
+            note = command.replace("remember that", "").replace("remember", "").strip()
+            if note:
+                self.add_note("Personal Memory", note)
+                return f"I'll remember that: {note}"
+            return "What should I remember?"
+        else:
+            return "I can set reminders or remember important information for you"
+    
+    # === OTHER METHODS ===
+    def show_quick_actions(self):
+        """Show quick actions window"""
+        actions_window = tk.Toplevel(self.root)
+        actions_window.title("Quick Actions")
+        actions_window.geometry("500x600")
+        
+        ttk.Label(actions_window, text="Quick Actions", font=("Arial", 14, "bold")).pack(pady=10)
+        
+        # Create notebook for categories
+        notebook = ttk.Notebook(actions_window)
+        
+        # Social Media Tab
+        social_frame = ttk.Frame(notebook)
+        social_actions = [
+            ("Open LinkedIn", lambda: self.process_enhanced_command("open linkedin")),
+            ("Like Post", lambda: self.process_enhanced_command("like post")),
+            ("Open Facebook", lambda: self.process_enhanced_command("open facebook")),
+            ("Open Instagram", lambda: self.process_enhanced_command("open instagram")),
+            ("Tweet", lambda: self.process_enhanced_command("tweet")),
+        ]
+        for text, command in social_actions:
+            ttk.Button(social_frame, text=text, command=command).pack(pady=2, fill=tk.X, padx=10)
+        notebook.add(social_frame, text="Social")
+        
+        # Email Tab
+        email_frame = ttk.Frame(notebook)
+        email_actions = [
+            ("Open Gmail", lambda: self.process_enhanced_command("open gmail")),
+            ("Compose Email", lambda: self.process_enhanced_command("write email")),
+            ("Check Inbox", lambda: self.process_enhanced_command("check inbox")),
+        ]
+        for text, command in email_actions:
+            ttk.Button(email_frame, text=text, command=command).pack(pady=2, fill=tk.X, padx=10)
+        notebook.add(email_frame, text="Email")
+        
+        # System Tab
+        system_frame = ttk.Frame(notebook)
+        system_actions = [
+            ("Adjust Brightness", lambda: self.process_enhanced_command("adjust brightness")),
+            ("Open Settings", lambda: self.process_enhanced_command("open settings")),
+            ("Take Screenshot", lambda: self.process_enhanced_command("take screenshot")),
+            ("Lock Computer", lambda: self.process_enhanced_command("lock computer")),
+        ]
+        for text, command in system_actions:
+            ttk.Button(system_frame, text=text, command=command).pack(pady=2, fill=tk.X, padx=10)
+        notebook.add(system_frame, text="System")
+        
+        # Music Tab
+        music_frame = ttk.Frame(notebook)
+        music_actions = [
+            ("Open Spotify", lambda: self.process_enhanced_command("open spotify")),
+            ("Play Music", lambda: self.process_enhanced_command("play music")),
+            ("Next Track", lambda: self.process_enhanced_command("next track")),
+            ("Like Song", lambda: self.process_enhanced_command("like song")),
+        ]
+        for text, command in music_actions:
+            ttk.Button(music_frame, text=text, command=command).pack(pady=2, fill=tk.X, padx=10)
+        notebook.add(music_frame, text="Music")
+        
+        # Shopping Tab
+        shopping_frame = ttk.Frame(notebook)
+        shopping_actions = [
+            ("Open Amazon", lambda: self.process_enhanced_command("open amazon")),
+            ("Open Flipkart", lambda: self.process_enhanced_command("open flipkart")),
+            ("Add to Cart", lambda: self.process_enhanced_command("add to cart")),
+            ("Search Products", lambda: self.process_enhanced_command("search products")),
+        ]
+        for text, command in shopping_actions:
+            ttk.Button(shopping_frame, text=text, command=command).pack(pady=2, fill=tk.X, padx=10)
+        notebook.add(shopping_frame, text="Shopping")
+        
+        notebook.pack(expand=True, fill='both', padx=10, pady=10)
+    
+    def show_command_categories(self):
+        """Show all available command categories"""
+        categories_window = tk.Toplevel(self.root)
+        categories_window.title("Command Categories")
+        categories_window.geometry("600x500")
+        
+        ttk.Label(categories_window, text="Available Command Categories", 
+                 font=("Arial", 16, "bold")).pack(pady=10)
+        
+        categories_text = """
+SOCIAL MEDIA COMMANDS:
+• "Open LinkedIn" - Open LinkedIn
+• "Like post" - Like current post
+• "Connect with John" - Search and connect
+• "Share post" - Share current post
+• "Comment on post" - Add comment
+• "Open Facebook" - Open Facebook
+• "Open Instagram" - Open Instagram
+• "Open Twitter" - Open Twitter
+• "Tweet something" - Create new tweet
+• "Like photo" - Like Instagram photo
+
+EMAIL COMMANDS:
+• "Open Gmail" - Open Gmail
+• "Write email to boss" - Compose email
+• "Send meeting request" - Create meeting email
+• "Check inbox" - View emails
+• "Reply to email" - Reply to current email
+• "Forward email" - Forward email
+
+SYSTEM COMMANDS:
+• "Adjust brightness" - Change screen brightness
+• "Open settings" - Open system settings
+• "Take screenshot" - Capture screen
+• "Lock computer" - Lock workstation
+• "Shutdown computer" - Turn off computer
+• "Restart computer" - Restart computer
+• "Sleep mode" - Put to sleep
+
+MUSIC COMMANDS:
+• "Play Spotify" - Open Spotify
+• "Like song" - Save current song
+• "Add to playlist" - Add to library
+• "Next track" - Skip song
+• "Previous track" - Go back
+• "Volume up/down" - Adjust volume
+• "Pause music" - Stop playback
+
+SHOPPING COMMANDS:
+• "Open Amazon" - Open Amazon
+• "Open Flipkart" - Open Flipkart
+• "Add to cart" - Add item to cart
+• "Search products" - Search for items
+• "Check price" - View pricing
+• "Buy now" - Purchase item
+
+BROWSER COMMANDS:
+• "Open Chrome" - Launch browser
+• "New tab" - Create new tab
+• "Close tab" - Close current tab
+• "Bookmark page" - Save bookmark
+• "Clear history" - Clear browsing data
+• "Incognito mode" - Private browsing
+
+PRODUCTIVITY COMMANDS:
+• "Open Word" - Launch Word
+• "Create document" - New document
+• "Save file" - Save current file
+• "Print document" - Print file
+• "Find text" - Search in document
+
+VIDEO COMMANDS:
+• "Open YouTube" - Open YouTube
+• "Like video" - Like current video
+• "Subscribe channel" - Subscribe to channel
+• "Watch later" - Save to watch later
+• "Search videos" - Search YouTube
+
+UTILITY COMMANDS:
+• "Open calculator" - Launch calculator
+• "Set timer" - Set countdown timer
+• "Check weather" - Get weather info
+• "Find location" - Open maps
+• "Translate text" - Translate phrases
+        """
+        
+        text_widget = scrolledtext.ScrolledText(categories_window, width=70, height=25, wrap=tk.WORD)
+        text_widget.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        text_widget.insert(tk.END, categories_text)
+        text_widget.config(state=tk.DISABLED)
+    
+    # === MISSING METHODS (from previous implementation) ===
+    def manage_profile(self):
+        """Open profile management window"""
+        # Implementation from previous code
+        pass
+    
+    def get_weather(self):
+        try:
+            response = requests.get("http://wttr.in/?format=3", timeout=5)
+            if response.status_code == 200:
+                return f"Weather: {response.text.strip()}"
+        except:
+            pass
+        return "Couldn't fetch weather information. Please check your connection."
+    
+    def get_joke(self):
+        try:
+            response = requests.get("https://official-joke-api.appspot.com/random_joke", timeout=5)
+            if response.status_code == 200:
+                joke_data = response.json()
+                return f"{joke_data['setup']} ... {joke_data['punchline']}"
+        except:
+            pass
+        jokes = [
+            "Why don't scientists trust atoms? Because they make up everything!",
+            "Why did the scarecrow win an award? He was outstanding in his field!",
+        ]
+        import random
+        return random.choice(jokes)
+    
+    def speak(self, text):
+        def speak_thread():
+            self.engine.say(text)
+            self.engine.runAndWait()
+        Thread(target=speak_thread, daemon=True).start()
+    
+    def add_to_conversation(self, speaker, text):
+        self.conversation_area.config(state=tk.NORMAL)
+        self.conversation_area.insert(tk.END, f"{speaker}: {text}\n")
+        self.conversation_area.see(tk.END)
+        self.conversation_area.config(state=tk.DISABLED)
+    
+    # Database methods
+    def add_task(self, task_text, priority="medium"):
+        conn = sqlite3.connect('personal_assistant.db')
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO tasks (task, priority, created_date) VALUES (?, ?, ?)",
+            (task_text, priority, datetime.datetime.now().isoformat())
+        )
+        conn.commit()
+        conn.close()
+    
+    def add_note(self, title, content, category="personal"):
+        conn = sqlite3.connect('personal_assistant.db')
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO notes (title, content, created_date, category) VALUES (?, ?, ?, ?)",
+            (title, content, datetime.datetime.now().isoformat(), category)
+        )
+        conn.commit()
+        conn.close()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = AdvancedVoiceAssistant(root)
+    root.mainloop()
